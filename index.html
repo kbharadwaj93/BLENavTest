@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Komoot BLE Simulator</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --accent: #00e676;
+            --primary: #2979ff;
+            --text: #ffffff;
+            --text-dim: #b0b0b0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 420px;
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            box-sizing: border-box;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin-top: 0;
+            margin-bottom: 8px;
+            text-align: center;
+        }
+
+        .status-badge {
+            text-align: center;
+            font-weight: 600;
+            font-size: 0.9rem;
+            padding: 6px 12px;
+            border-radius: 20px;
+            background: #2a2a2a;
+            color: var(--text-dim);
+            margin-bottom: 20px;
+            display: block;
+        }
+
+        .status-badge.connected {
+            background: rgba(0, 230, 118, 0.15);
+            color: var(--accent);
+        }
+
+        button.btn-primary {
+            width: 100%;
+            padding: 14px;
+            border-radius: 10px;
+            border: none;
+            background: var(--primary);
+            color: #fff;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button.btn-primary:hover {
+            background: #1c62d6;
+        }
+
+        .controls {
+            display: none;
+            margin-top: 20px;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        label {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }
+
+        input[type="text"], input[type="range"] {
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        input[type="text"] {
+            background: #2a2a2a;
+            border: 1px solid #333;
+            color: #fff;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+
+        .range-val {
+            font-weight: bold;
+            color: var(--primary);
+        }
+
+        .grid-buttons {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .btn-nav {
+            background: #2a2a2a;
+            border: 1px solid #3d3d3d;
+            color: #fff;
+            padding: 14px 10px;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: background 0.2s, transform 0.1s;
+        }
+
+        .btn-nav:active {
+            transform: scale(0.97);
+            background: #383838;
+        }
+
+        .btn-nav.full-width {
+            grid-column: span 2;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Komoot BLE Simulator</h1>
+    <span id="status" class="status-badge">Disconnected</span>
+
+    <button id="connectBtn" class="btn-primary" onclick="toggleConnect()">Connect to Watch (HAC)</button>
+
+    <div id="controls" class="controls">
+        <div class="form-group">
+            <label for="street">Street Name</label>
+            <input type="text" id="street" value="Main Street" placeholder="Enter road name...">
+        </div>
+
+        <div class="form-group">
+            <label>Distance: <span id="distVal" class="range-val">150</span> m</label>
+            <input type="range" id="distance" min="10" max="2000" step="10" value="150" oninput="document.getElementById('distVal').innerText = this.value">
+        </div>
+
+        <div class="grid-buttons">
+            <button class="btn-nav full-width" onclick="sendSignal(0)">⬆️ Straight On</button>
+            <button class="btn-nav" onclick="sendSignal(8)">↖️ Slight Left</button>
+            <button class="btn-nav" onclick="sendSignal(2)">↗️ Slight Right</button>
+            <button class="btn-nav" onclick="sendSignal(7)">⬅️ Turn Left</button>
+            <button class="btn-nav" onclick="sendSignal(3)">➡️ Turn Right</button>
+            <button class="btn-nav" onclick="sendSignal(6)">↰ Sharp Left</button>
+            <button class="btn-nav" onclick="sendSignal(4)">↱ Sharp Right</button>
+            <button class="btn-nav full-width" onclick="sendSignal(5)">↩️ U-Turn</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const SERVICE_UUID = "0000fe15-0000-1000-8000-00805f9b34fb";
+    const CHAR_UUID    = "0000fe16-0000-1000-8000-00805f9b34fb";
+
+    let bleDevice = null;
+    let navCharacteristic = null;
+
+    async function toggleConnect() {
+        if (bleDevice && bleDevice.gatt.connected) {
+            bleDevice.gatt.disconnect();
+            return;
+        }
+
+        try {
+            document.getElementById('status').innerText = "Scanning...";
+            
+            bleDevice = await navigator.bluetooth.requestDevice({
+                filters: [{ name: 'HAC' }],
+                optionalServices: [SERVICE_UUID]
+            });
+
+            bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+            document.getElementById('status').innerText = "Connecting...";
+            const server = await bleDevice.gatt.connect();
+            const service = await server.getPrimaryService(SERVICE_UUID);
+            navCharacteristic = await service.getCharacteristic(CHAR_UUID);
+
+            document.getElementById('status').innerText = "Connected";
+            document.getElementById('status').classList.add('connected');
+            document.getElementById('connectBtn').innerText = "Disconnect";
+            document.getElementById('controls').style.display = "flex";
+
+        } catch (error) {
+            console.error("BLE Error:", error);
+            document.getElementById('status').innerText = "Failed / Canceled";
+        }
+    }
+
+    function onDisconnected() {
+        document.getElementById('status').innerText = "Disconnected";
+        document.getElementById('status').classList.remove('connected');
+        document.getElementById('connectBtn').innerText = "Connect to Watch (HAC)";
+        document.getElementById('controls').style.display = "none";
+        navCharacteristic = null;
+    }
+
+    async function sendSignal(directionCode) {
+        if (!navCharacteristic) return;
+
+        const streetStr = document.getElementById('street').value || "Route";
+        const distMeters = parseInt(document.getElementById('distance').value, 10);
+
+        // Encode payload: Byte 0 = Dir, Bytes 1-4 = Distance (Uint32BE), Bytes 5+ = Text
+        const encoder = new TextEncoder();
+        const streetBytes = encoder.encode(streetStr);
+        
+        const payload = new Uint8Array(5 + streetBytes.length);
+        payload[0] = directionCode;
+        
+        // Write 32-bit big-endian integer for distance
+        payload[1] = (distMeters >> 24) & 0xFF;
+        payload[2] = (distMeters >> 16) & 0xFF;
+        payload[3] = (distMeters >> 8) & 0xFF;
+        payload[4] = distMeters & 0xFF;
+
+        payload.set(streetBytes, 5);
+
+        try {
+            await navCharacteristic.writeValue(payload);
+        } catch (err) {
+            console.error("Write error:", err);
+        }
+    }
+</script>
+
+</body>
+</html>

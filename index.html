@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>M5Stack GPS Publisher</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; text-align: center; }
+    button { padding: 12px 24px; font-size: 16px; margin: 10px; cursor: pointer; }
+    #status { font-weight: bold; margin-top: 15px; color: #333; }
+    .data-box { background: #f0f0f0; border-radius: 8px; padding: 10px; margin-top: 20px; text-align: left; }
+  </style>
+</head>
+<body>
+
+  <h2>M5Stack Web GPS Sender</h2>
+  <button id="connectBtn">Connect to M5Stack</button>
+  <button id="stopBtn" disabled>Stop Tracking</button>
+
+  <div id="status">Status: Disconnected</div>
+
+  <div class="data-box">
+    <p><strong>Latitude:</strong> <span id="lat">--</span></p>
+    <p><strong>Longitude:</strong> <span id="lng">--</span></p>
+    <p><strong>Heading:</strong> <span id="heading">--</span>°</p>
+  </div>
+
+  <script>
+    // BLE Service and Characteristic UUIDs matching ESP32
+    const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+    const CHAR_UUID    = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+
+    let gattServer = null;
+    let gpsCharacteristic = null;
+    let watchId = null;
+
+    const connectBtn = document.getElementById('connectBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusText = document.getElementById('status');
+
+    connectBtn.addEventListener('click', async () => {
+      try {
+        statusText.innerText = "Status: Searching for BLE device...";
+        
+        // 1. Request Bluetooth Device
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: 'M5_Stopwatch_Nav' }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        statusText.innerText = "Status: Connecting to M5Stack...";
+        gattServer = await device.gatt.connect();
+
+        // 2. Get Service and Characteristic
+        const service = await gattServer.getPrimaryService(SERVICE_UUID);
+        gpsCharacteristic = await service.getCharacteristic(CHAR_UUID);
+
+        statusText.innerText = "Status: Connected! Starting GPS...";
+        connectBtn.disabled = true;
+        stopBtn.disabled = false;
+
+        // 3. Start HTML5 GPS Tracking
+        startGPSTracking();
+
+      } catch (error) {
+        statusText.innerText = "Error: " + error.message;
+        console.error(error);
+      }
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      if (gattServer) gattServer.disconnect();
+      statusText.innerText = "Status: Disconnected";
+      connectBtn.disabled = false;
+      stopBtn.disabled = true;
+    });
+
+    function startGPSTracking() {
+      if (!navigator.geolocation) {
+        statusText.innerText = "Error: Geolocation not supported by browser.";
+        return;
+      }
+
+      const options = {
+        enableHighAccuracy: true,
+        timeout: 5000,
+        maximumAge: 0
+      };
+
+      watchId = navigator.geolocation.watchPosition(sendGPSPayload, (err) => {
+        statusText.innerText = "GPS Error: " + err.message;
+      }, options);
+    }
+
+    async function sendGPSPayload(position) {
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      const heading = position.coords.heading || 0; // fallback to 0 if stationary
+
+      // Update UI
+      document.getElementById('lat').innerText = lat.toFixed(6);
+      document.getElementById('lng').innerText = lng.toFixed(6);
+      document.getElementById('heading').innerText = heading.toFixed(1);
+
+      if (!gpsCharacteristic) return;
+
+      // Pack binary payload (Little-Endian 10 bytes matching ESP32 struct)
+      const buffer = new ArrayBuffer(10);
+      const view = new DataView(buffer);
+
+      const latScaled = Math.round(lat * 1e7);
+      const lngScaled = Math.round(lng * 1e7);
+      const headingScaled = Math.round(heading * 10);
+
+      // int32_t latScaled (4 bytes, little-endian)
+      view.setInt32(0, latScaled, true);
+      // int32_t lngScaled (4 bytes, little-endian)
+      view.setInt32(4, lngScaled, true);
+      // uint16_t heading (2 bytes, little-endian)
+      view.setUint16(8, headingScaled, true);
+
+      try {
+        await gpsCharacteristic.writeValueWithoutResponse(buffer);
+      } catch (err) {
+        console.error("BLE Write Error:", err);
+      }
+    }
+  </script>
+</body>
+</html>
